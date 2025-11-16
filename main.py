@@ -55,7 +55,7 @@ async def inline_handler(query: InlineQuery):
         title="Send Whisper",
         description=f"Secret message for {target}",
         input_message_content=InputTextMessageContent(
-            message_text="**A secret message**"
+            message_text="**A secret message**",
             parse_mode="Markdown",
         ),
         reply_markup=keyboard,
