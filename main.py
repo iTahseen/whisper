@@ -13,7 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 BOT_TOKEN = "6817290645:AAGG27rLGAIR6IWwO9zb2_lwpY2qzCXZ2cI"
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
 mongo_client = AsyncIOMotorClient(
@@ -26,11 +26,10 @@ collection = db["whispers"]
 @dp.message(F.text == "/start")
 async def start_cmd(message):
     await message.answer(
-        "👋 **Whisper Bot Ready!**\n\n"
-        "Use me in inline mode to send secret messages.\n\n"
-        "`@whositbot your message @username`\n\n"
-        "Only the target person can see the whisper.",
-        parse_mode="Markdown",
+        "👋 <b>Whisper Bot Ready!</b>\n\n"
+        "Use me in <i>inline mode</i> to send secret messages.\n\n"
+        "<code>@whositbot your message @username</code>\n\n"
+        "<b>Only the target person will be able to open the whisper.</b>"
     )
 
 
@@ -38,9 +37,6 @@ async def start_cmd(message):
 async def inline_handler(query: InlineQuery):
     text = query.query.strip()
 
-    # ------------------------------------
-    # CHANGE 1 → Show instructions if empty
-    # ------------------------------------
     if text == "":
         result = InlineQueryResultArticle(
             id="help",
@@ -48,27 +44,38 @@ async def inline_handler(query: InlineQuery):
             description="Usage: @whositbot your message @username",
             input_message_content=InputTextMessageContent(
                 message_text=(
-                    "**How to use:**\n"
-                    "`@whositbot your secret message @username`\n\n"
+                    "<b>How to use:</b>\n"
+                    "<code>@whositbot your secret message @username</code>\n\n"
                     "Example:\n"
-                    "`@whositbot I love you @john`"
-                ),
-                parse_mode="Markdown",
+                    "<code>@whositbot I love you @john</code>"
+                )
             ),
         )
         return await query.answer([result], cache_time=0)
 
     parts = text.split()
+    last = parts[-1]
 
-    # ------------------------------------
-    # CHANGE 2 → If in private chat & no username
-    # ------------------------------------
-    if len(parts) == 1:
-        target = str(query.from_user.id)
-        secret_message = parts[0]
-    else:
-        target = parts[-1]
+    is_valid_username = last.startswith("@") and len(last) > 1
+    is_valid_userid = last.isdigit()
+
+    if is_valid_username or is_valid_userid:
+        target = last
         secret_message = " ".join(parts[:-1])
+    else:
+        if query.chat_type == "private":
+            target = str(query.from_user.id)
+            secret_message = text
+        else:
+            error_result = InlineQueryResultArticle(
+                id="err",
+                title="Missing username",
+                description="Format: @whositbot your message @username",
+                input_message_content=InputTextMessageContent(
+                    message_text="❌ Please add <b>@username</b> at the end."
+                ),
+            )
+            return await query.answer([error_result], cache_time=0)
 
     secret_id = str(uuid.uuid4())
 
@@ -87,8 +94,7 @@ async def inline_handler(query: InlineQuery):
         title="Send Whisper",
         description=f"Secret message for {target}",
         input_message_content=InputTextMessageContent(
-            message_text="**A secret message**",
-            parse_mode="Markdown",
+            message_text="<b>A secret message</b>"
         ),
         reply_markup=keyboard,
     )
