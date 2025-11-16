@@ -24,25 +24,62 @@ dp = Dispatcher()
 mongo_client = AsyncIOMotorClient(
     "mongodb+srv://itxcriminal:qureshihashmI1@cluster0.jyqy9.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 )
+
 db = mongo_client["whisperbot"]
 collection = db["whispers"]
+history_db = db["history"]
+
+
+# Save whisper history
+async def save_history(owner_id: int, target: str):
+    record = await history_db.find_one({"owner": owner_id})
+    
+    if record:
+        if target not in record["targets"]:
+            record["targets"].append(target)
+            await history_db.update_one(
+                {"owner": owner_id},
+                {"$set": {"targets": record["targets"]}}
+            )
+    else:
+        await history_db.insert_one(
+            {"owner": owner_id, "targets": [target]}
+        )
+
+
+
+# Convert numeric ID → @username or "Name (ID)"
+async def convert_target(target: str):
+    if target.isdigit():
+        try:
+            chat = await bot.get_chat(int(target))
+            if chat.username:
+                return f"@{chat.username}"
+            else:
+                name = chat.first_name or "User"
+                return f"{name} ({target})"
+        except:
+            return target
+    return target
 
 
 @dp.message(F.text == "/start")
 async def start_cmd(message):
     await message.answer(
         "👋 <b>Whisper Bot Ready!</b>\n\n"
-        "Use me in inline mode:\n"
+        "Use inline mode:\n"
         "<code>@whositbot your message @username</code>\n\n"
-        "<b>No one else can read your whisper.</b>"
+        "<b>Only the target person can read it.</b>"
     )
+
 
 
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
     text = query.query.strip()
+    user_id = query.from_user.id
 
-    # Empty → show instructions
+    # Show help when empty
     if text == "":
         help_result = InlineQueryResultArticle(
             id="help",
@@ -52,44 +89,88 @@ async def inline_handler(query: InlineQuery):
                 message_text=(
                     "<b>How to use:</b>\n"
                     "<code>@whositbot your secret message @username</code>\n\n"
-                    "Example:\n"
-                    "<code>@whositbot I love you @john</code>"
                 )
             ),
         )
         return await query.answer([help_result], cache_time=0)
 
+
+    # 🔥 HISTORY SUGGESTION MODE
+    if text.endswith("@"):
+        record = await history_db.find_one({"owner": user_id})
+
+        if not record or len(record["targets"]) == 0:
+            empty = InlineQueryResultArticle(
+                id="no_history",
+                title="No previous recipients",
+                description="You haven't sent whispers yet",
+                input_message_content=InputTextMessageContent(
+                    message_text="No history available."
+                ),
+            )
+            return await query.answer([empty], cache_time=0)
+
+        results = []
+
+        for t in record["targets"]:
+            results.append(
+                InlineQueryResultArticle(
+                    id=str(uuid.uuid4()),
+                    title=f"Send again to {t}",
+                    description=t,
+                    input_message_content=InputTextMessageContent(
+                        message_text=f"<b>A secret message</b>"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text="Open Message", callback_data="placeholder")]
+                        ]
+                    )
+                )
+            )
+
+        return await query.answer(results, cache_time=0)
+
+
+
+    # Normal whisper logic
     parts = text.split()
     last = parts[-1]
 
     is_username = last.startswith("@") and len(last) > 1
     is_userid = last.isdigit()
 
-    # Proper target
     if is_username or is_userid:
-        target = last
+        target_raw = last
         secret_message = " ".join(parts[:-1])
     else:
-        # NO TARGET GIVEN → Only allowed in Saved Messages
+        # Only allow self whisper in Saved Messages
         if query.chat_type == "sender":
-            target = str(query.from_user.id)
+            target_raw = str(user_id)
             secret_message = text
         else:
             error_result = InlineQueryResultArticle(
                 id="err",
                 title="Missing username",
-                description="Correct: @whositbot your message @username",
+                description="Add @username at the end",
                 input_message_content=InputTextMessageContent(
                     message_text="❌ Please add <b>@username</b> at the end."
                 ),
             )
             return await query.answer([error_result], cache_time=0)
 
-    secret_id = str(uuid.uuid4())
 
+    # Convert target (ID → username)
+    target = await convert_target(target_raw)
+
+    # Save whisper
+    secret_id = str(uuid.uuid4())
     await collection.insert_one(
         {"_id": secret_id, "text": secret_message, "target": target}
     )
+
+    # Save history
+    await save_history(user_id, target)
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -110,40 +191,40 @@ async def inline_handler(query: InlineQuery):
     await query.answer([result], cache_time=0)
 
 
+
 @dp.callback_query(F.data.startswith("open"))
 async def open_whisper(callback: CallbackQuery):
     _, secret_id = callback.data.split(":")
 
     record = await collection.find_one({"_id": secret_id})
     if not record:
-        return await callback.answer("Whisper not found.", show_alert=True)
+        return await callback.answer("Whisper expired.", show_alert=True)
 
     text = record["text"]
     target = record["target"]
     user = callback.from_user
 
+    # Check permission
     allowed = False
-
-    # Check target
-    if target.isdigit():
-        if int(target) == user.id:
-            allowed = True
-    elif target.startswith("@") and user.username:
+    if target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
+    elif target.endswith(f"({user.id})"):
+        allowed = True
+    elif target == str(user.id):
+        allowed = True
 
     if not allowed:
         return await callback.answer("Not for you.", show_alert=True)
 
-    popup = text
-    if len(popup) > 200:
-        popup = popup[:197] + "..."
-
+    # Show message
+    popup = text[:200] + "..." if len(text) > 200 else text
     await callback.answer(popup, show_alert=True)
 
 
+
 async def main():
-    print("Whisper bot running…")
+    print("Whisper bot running with history feature…")
     await dp.start_polling(bot)
 
 
