@@ -13,7 +13,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 BOT_TOKEN = "6817290645:AAGG27rLGAIR6IWwO9zb2_lwpY2qzCXZ2cI"
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(
+    token=BOT_TOKEN,
+    default=bot.defaults.DefaultBotProperties(parse_mode="HTML")
+)
 dp = Dispatcher()
 
 mongo_client = AsyncIOMotorClient(
@@ -27,9 +30,9 @@ collection = db["whispers"]
 async def start_cmd(message):
     await message.answer(
         "👋 <b>Whisper Bot Ready!</b>\n\n"
-        "Use me in <i>inline mode</i> to send secret messages.\n\n"
+        "Use in inline mode:\n"
         "<code>@whositbot your message @username</code>\n\n"
-        "<b>Only the target person will be able to open the whisper.</b>"
+        "<b>No one else can read the message.</b>"
     )
 
 
@@ -37,6 +40,7 @@ async def start_cmd(message):
 async def inline_handler(query: InlineQuery):
     text = query.query.strip()
 
+    # Show help if empty
     if text == "":
         help_result = InlineQueryResultArticle(
             id="help",
@@ -56,27 +60,26 @@ async def inline_handler(query: InlineQuery):
     parts = text.split()
     last = parts[-1]
 
-    is_valid_username = last.startswith("@") and len(last) > 1
-    is_valid_userid = last.isdigit()
+    is_username = last.startswith("@") and len(last) > 1
+    is_userid = last.isdigit()
 
-    if is_valid_username or is_valid_userid:
+    # Case: explicit username or ID
+    if is_username or is_userid:
         target = last
         secret_message = " ".join(parts[:-1])
-
+    
     else:
-        if query.chat_type == "private" and query.from_user.id != query.chat.id:
-            target = str(query.chat.id)
-            secret_message = text
-
-        elif query.chat_type == "private" and query.from_user.id == query.chat.id:
+        # If user is in their own saved messages (chat_type = "sender")
+        if query.chat_type == "sender":
             target = str(query.from_user.id)
             secret_message = text
 
         else:
+            # Cannot detect friend → must require @username
             error_result = InlineQueryResultArticle(
                 id="err",
                 title="Missing username",
-                description="Format: @whositbot your message @username",
+                description="Usage: @whositbot your message @username",
                 input_message_content=InputTextMessageContent(
                     message_text="❌ Please add <b>@username</b> at the end."
                 ),
@@ -113,7 +116,6 @@ async def open_whisper(callback: CallbackQuery):
     _, secret_id = callback.data.split(":")
 
     record = await collection.find_one({"_id": secret_id})
-
     if not record:
         return await callback.answer("Whisper not found.", show_alert=True)
 
@@ -126,7 +128,6 @@ async def open_whisper(callback: CallbackQuery):
     if target.isdigit():
         if int(target) == user.id:
             allowed = True
-
     elif target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
@@ -134,15 +135,15 @@ async def open_whisper(callback: CallbackQuery):
     if not allowed:
         return await callback.answer("Not for you.", show_alert=True)
 
-    popup_text = text
-    if len(popup_text) > 200:
-        popup_text = popup_text[:197] + "..."
+    popup = text
+    if len(popup) > 200:
+        popup = popup[:197] + "..."
 
-    await callback.answer(popup_text, show_alert=True)
+    await callback.answer(popup, show_alert=True)
 
 
 async def main():
-    print("Whisper bot with MongoDB running...")
+    print("Whisper bot running...")
     await dp.start_polling(bot)
 
 
