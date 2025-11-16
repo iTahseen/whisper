@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
@@ -15,8 +16,9 @@ BOT_TOKEN = "6817290645:AAGG27rLGAIR6IWwO9zb2_lwpY2qzCXZ2cI"
 
 bot = Bot(
     token=BOT_TOKEN,
-    default=bot.defaults.DefaultBotProperties(parse_mode="HTML")
+    default=DefaultBotProperties(parse_mode="HTML")
 )
+
 dp = Dispatcher()
 
 mongo_client = AsyncIOMotorClient(
@@ -30,9 +32,9 @@ collection = db["whispers"]
 async def start_cmd(message):
     await message.answer(
         "👋 <b>Whisper Bot Ready!</b>\n\n"
-        "Use in inline mode:\n"
+        "Use me in inline mode:\n"
         "<code>@whositbot your message @username</code>\n\n"
-        "<b>No one else can read the message.</b>"
+        "<b>No one else can read your whisper.</b>"
     )
 
 
@@ -40,7 +42,7 @@ async def start_cmd(message):
 async def inline_handler(query: InlineQuery):
     text = query.query.strip()
 
-    # Show help if empty
+    # Empty → show instructions
     if text == "":
         help_result = InlineQueryResultArticle(
             id="help",
@@ -63,23 +65,20 @@ async def inline_handler(query: InlineQuery):
     is_username = last.startswith("@") and len(last) > 1
     is_userid = last.isdigit()
 
-    # Case: explicit username or ID
+    # Proper target
     if is_username or is_userid:
         target = last
         secret_message = " ".join(parts[:-1])
-    
     else:
-        # If user is in their own saved messages (chat_type = "sender")
+        # NO TARGET GIVEN → Only allowed in Saved Messages
         if query.chat_type == "sender":
             target = str(query.from_user.id)
             secret_message = text
-
         else:
-            # Cannot detect friend → must require @username
             error_result = InlineQueryResultArticle(
                 id="err",
                 title="Missing username",
-                description="Usage: @whositbot your message @username",
+                description="Correct: @whositbot your message @username",
                 input_message_content=InputTextMessageContent(
                     message_text="❌ Please add <b>@username</b> at the end."
                 ),
@@ -125,6 +124,7 @@ async def open_whisper(callback: CallbackQuery):
 
     allowed = False
 
+    # Check target
     if target.isdigit():
         if int(target) == user.id:
             allowed = True
@@ -143,7 +143,7 @@ async def open_whisper(callback: CallbackQuery):
 
 
 async def main():
-    print("Whisper bot running...")
+    print("Whisper bot running…")
     await dp.start_polling(bot)
 
 
