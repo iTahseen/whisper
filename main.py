@@ -19,7 +19,6 @@ dp = Dispatcher()
 mongo_client = AsyncIOMotorClient(
     "mongodb+srv://itxcriminal:qureshihashmI1@cluster0.jyqy9.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 )
-
 db = mongo_client["whisperbot"]
 collection = db["whispers"]
 
@@ -30,7 +29,7 @@ async def start_cmd(message):
         "👋 **Whisper Bot Ready!**\n\n"
         "Use me in inline mode to send secret messages.\n\n"
         "`@whositbot your message @username`\n\n"
-        "Only the target person can open the secret.",
+        "Only the target person can see the whisper.",
         parse_mode="Markdown",
     )
 
@@ -38,15 +37,39 @@ async def start_cmd(message):
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
     text = query.query.strip()
-    if not text:
-        return
+
+    # ------------------------------------
+    # CHANGE 1 → Show instructions if empty
+    # ------------------------------------
+    if text == "":
+        result = InlineQueryResultArticle(
+            id="help",
+            title="How to send a whisper",
+            description="Usage: @whositbot your message @username",
+            input_message_content=InputTextMessageContent(
+                message_text=(
+                    "**How to use:**\n"
+                    "`@whositbot your secret message @username`\n\n"
+                    "Example:\n"
+                    "`@whositbot I love you @john`"
+                ),
+                parse_mode="Markdown",
+            ),
+        )
+        return await query.answer([result], cache_time=0)
 
     parts = text.split()
-    if len(parts) < 2:
-        return
 
-    target = parts[-1]
-    secret_message = " ".join(parts[:-1])
+    # ------------------------------------
+    # CHANGE 2 → If in private chat & no username
+    # ------------------------------------
+    if len(parts) == 1:
+        target = str(query.from_user.id)
+        secret_message = parts[0]
+    else:
+        target = parts[-1]
+        secret_message = " ".join(parts[:-1])
+
     secret_id = str(uuid.uuid4())
 
     await collection.insert_one(
