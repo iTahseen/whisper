@@ -38,7 +38,7 @@ async def inline_handler(query: InlineQuery):
     text = query.query.strip()
 
     if text == "":
-        result = InlineQueryResultArticle(
+        help_result = InlineQueryResultArticle(
             id="help",
             title="How to send a whisper",
             description="Usage: @whositbot your message @username",
@@ -51,7 +51,7 @@ async def inline_handler(query: InlineQuery):
                 )
             ),
         )
-        return await query.answer([result], cache_time=0)
+        return await query.answer([help_result], cache_time=0)
 
     parts = text.split()
     last = parts[-1]
@@ -62,10 +62,16 @@ async def inline_handler(query: InlineQuery):
     if is_valid_username or is_valid_userid:
         target = last
         secret_message = " ".join(parts[:-1])
+
     else:
-        if query.chat_type == "private":
+        if query.chat_type == "private" and query.from_user.id != query.chat.id:
+            target = str(query.chat.id)
+            secret_message = text
+
+        elif query.chat_type == "private" and query.from_user.id == query.chat.id:
             target = str(query.from_user.id)
             secret_message = text
+
         else:
             error_result = InlineQueryResultArticle(
                 id="err",
@@ -120,6 +126,7 @@ async def open_whisper(callback: CallbackQuery):
     if target.isdigit():
         if int(target) == user.id:
             allowed = True
+
     elif target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
