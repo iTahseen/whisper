@@ -9,21 +9,28 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
 )
+from motor.motor_asyncio import AsyncIOMotorClient
 
 BOT_TOKEN = "6817290645:AAGG27rLGAIR6IWwO9zb2_lwpY2qzCXZ2cI"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-SECRET_DB = {}
+
+mongo_client = AsyncIOMotorClient(
+    "mongodb+srv://itxcriminal:qureshihashmI1@cluster0.jyqy9.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+)
+
+db = mongo_client["whisperbot"]
+collection = db["whispers"]
 
 
 @dp.message(F.text == "/start")
 async def start_cmd(message):
     await message.answer(
         "👋 **Whisper Bot Ready!**\n\n"
-        "Use me in *inline mode* to send secret messages.\n\n"
-        "`@whositbot your secret message @username`\n\n"
-        "Only the target user will be able to open the whisper.",
+        "Use me in inline mode to send secret messages.\n\n"
+        "`@whositbot your message @username`\n\n"
+        "Only the target person can open the secret.",
         parse_mode="Markdown",
     )
 
@@ -42,7 +49,9 @@ async def inline_handler(query: InlineQuery):
     secret_message = " ".join(parts[:-1])
     secret_id = str(uuid.uuid4())
 
-    SECRET_DB[secret_id] = {"text": secret_message, "target": target}
+    await collection.insert_one(
+        {"_id": secret_id, "text": secret_message, "target": target}
+    )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -68,12 +77,13 @@ async def inline_handler(query: InlineQuery):
 async def open_whisper(callback: CallbackQuery):
     _, secret_id = callback.data.split(":")
 
-    if secret_id not in SECRET_DB:
-        return await callback.answer("Whisper expired.", show_alert=True)
+    record = await collection.find_one({"_id": secret_id})
 
-    data = SECRET_DB[secret_id]
-    text = data["text"]
-    target = data["target"]
+    if not record:
+        return await callback.answer("Whisper not found.", show_alert=True)
+
+    text = record["text"]
+    target = record["target"]
     user = callback.from_user
 
     allowed = False
@@ -96,7 +106,7 @@ async def open_whisper(callback: CallbackQuery):
 
 
 async def main():
-    print("Whisper bot running (Aiogram 3.x)...")
+    print("Whisper bot with MongoDB running...")
     await dp.start_polling(bot)
 
 
