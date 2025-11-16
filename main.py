@@ -228,7 +228,7 @@ async def open_whisper(callback: CallbackQuery):
 
 
 async def main():
-    print("Whisper bot running with full history support…")
+    print("Whisper bot is running…")
     await dp.start_polling(bot)
 
 
