@@ -22,7 +22,7 @@ async def start_cmd(message):
     await message.answer(
         "👋 **Whisper Bot Ready!**\n\n"
         "Use me in *inline mode* to send secret messages.\n\n"
-        "`@YourBot your secret message @username`\n\n"
+        "`@whositbot your secret message @username`\n\n"
         "Only the target user will be able to open the whisper.",
         parse_mode="Markdown",
     )
@@ -46,7 +46,7 @@ async def inline_handler(query: InlineQuery):
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🔐 Open Whisper", callback_data=f"open:{secret_id}")]
+            [InlineKeyboardButton(text="Open Message", callback_data=f"open:{secret_id}")]
         ]
     )
 
@@ -55,7 +55,8 @@ async def inline_handler(query: InlineQuery):
         title="Send Whisper",
         description=f"Secret message for {target}",
         input_message_content=InputTextMessageContent(
-            message_text="🔐 Whisper message"
+            message_text="**A secret message**"
+            parse_mode="Markdown",
         ),
         reply_markup=keyboard,
     )
@@ -68,7 +69,7 @@ async def open_whisper(callback: CallbackQuery):
     _, secret_id = callback.data.split(":")
 
     if secret_id not in SECRET_DB:
-        return await callback.answer("❌ Whisper expired.", show_alert=True)
+        return await callback.answer("Whisper expired.", show_alert=True)
 
     data = SECRET_DB[secret_id]
     text = data["text"]
@@ -85,7 +86,7 @@ async def open_whisper(callback: CallbackQuery):
             allowed = True
 
     if not allowed:
-        return await callback.answer("🚫 Not for you.", show_alert=True)
+        return await callback.answer("Not for you.", show_alert=True)
 
     popup_text = text
     if len(popup_text) > 200:
