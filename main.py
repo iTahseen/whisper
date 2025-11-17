@@ -220,12 +220,16 @@ async def open_whisper(callback: CallbackQuery):
     if target == str(user.id):
         allowed = True
 
+    # ❌ Not allowed → show stylish message
     if not allowed:
-        return await callback.answer("Not for you.", show_alert=True)
+        return await callback.answer(
+            f"This whisper is meant for {target}, not for you.",
+            show_alert=True
+        )
 
+    # Allowed → show whisper
     popup = text[:200] + "..." if len(text) > 200 else text
     await callback.answer(popup, show_alert=True)
-
 
 async def main():
     print("Whisper bot running with full history support…")
