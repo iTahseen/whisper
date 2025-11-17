@@ -30,36 +30,36 @@ db = mongo_client["whisperbot"]
 collection = db["whispers"]
 history_db = db["history"]
 
-# Helpers
 
 async def normalize_and_validate_target(raw: str):
     """
-    Accepts raw target (e.g. "@john", "12345", or "Name (12345)").
-    Returns normalized target string if valid, else None.
-    Normalized form:
-      - "@username"  (if username exists)
-      - "First (12345)" (if no username but get_chat succeeded)
-      - "12345" (if numeric id exists but get_chat failed? we'll return None)
+    Validate and normalize a raw target string.
+    Returns normalized target or None if invalid.
+    Normalized forms:
+      - "@username"
+      - "FirstName (12345678)"
     """
     raw = raw.strip()
-    # already normalized pattern: Name (ID) -> consider it valid if ID exists
+    if not raw:
+        return None
+
+    # If already in "Name (ID)" form, try to validate ID
     m = re.match(r"^(.+)\s+\((\d+)\)$", raw)
     if m:
-        name, idstr = m.group(1), m.group(2)
+        idstr = m.group(2)
         try:
             chat = await bot.get_chat(int(idstr))
-            # return same display (freshen name if possible)
             if chat.username:
                 return f"@{chat.username}"
             else:
-                display_name = chat.first_name or name or "User"
-                return f"{display_name} ({idstr})"
-        except:
+                name = chat.first_name or "User"
+                return f"{name} ({idstr})"
+        except Exception:
             return None
 
-    # @username
+    # @username case
     if raw.startswith("@"):
-        username = raw[1:]
+        username = raw[1:].strip()
         if not username:
             return None
         try:
@@ -67,13 +67,12 @@ async def normalize_and_validate_target(raw: str):
             if chat.username:
                 return f"@{chat.username}"
             else:
-                # improbable: get_chat succeeded but no username; use name(ID)
                 name = chat.first_name or "User"
                 return f"{name} ({chat.id})"
-        except:
+        except Exception:
             return None
 
-    # numeric id
+    # numeric ID case
     if raw.isdigit():
         try:
             chat = await bot.get_chat(int(raw))
@@ -82,24 +81,18 @@ async def normalize_and_validate_target(raw: str):
             else:
                 name = chat.first_name or "User"
                 return f"{name} ({raw})"
-        except:
+        except Exception:
             return None
 
     return None
 
 
 async def save_history_entry(owner_id: int, target_normalized: str):
-    """
-    Insert/update history for owner_id.
-    Keep most recent first, unique, limit 10.
-    """
     if not target_normalized:
         return
-
     rec = await history_db.find_one({"owner": owner_id})
     if rec:
         targets = rec.get("targets", [])
-        # remove existing instance if present
         targets = [t for t in targets if t != target_normalized]
         targets.insert(0, target_normalized)
         targets = targets[:10]
@@ -108,24 +101,18 @@ async def save_history_entry(owner_id: int, target_normalized: str):
         await history_db.insert_one({"owner": owner_id, "targets": [target_normalized]})
 
 
-async def prune_history_invalid(owner_id: int):
-    """
-    Validate saved history targets and remove invalid ones.
-    Returns cleaned list.
-    """
+async def prune_and_get_history(owner_id: int):
     rec = await history_db.find_one({"owner": owner_id})
     if not rec:
         return []
-    kept = []
+    cleaned = []
     for t in rec.get("targets", []):
-        valid = await normalize_and_validate_target(t)
-        if valid:
-            if valid not in kept:
-                kept.append(valid)
-    if kept != rec.get("targets", []):
-        # update DB with cleaned normalized list
-        await history_db.update_one({"owner": owner_id}, {"$set": {"targets": kept}})
-    return kept
+        v = await normalize_and_validate_target(t)
+        if v and v not in cleaned:
+            cleaned.append(v)
+    if cleaned != rec.get("targets", []):
+        await history_db.update_one({"owner": owner_id}, {"$set": {"targets": cleaned}})
+    return cleaned
 
 
 @dp.message(F.text == "/start")
@@ -157,10 +144,9 @@ async def inline_handler(query: InlineQuery):
         )
         return await query.answer([help_result], cache_time=0)
 
-    # HISTORY SUGGESTIONS (when user types trailing @)
+    # History suggestions when trailing '@'
     if text.endswith("@"):
-        # clean and fetch history, removing invalid targets
-        cleaned = await prune_history_invalid(user_id)
+        cleaned = await prune_and_get_history(user_id)
         if not cleaned:
             empty = InlineQueryResultArticle(
                 id="no_history",
@@ -175,25 +161,19 @@ async def inline_handler(query: InlineQuery):
         message_without_at = text[:-1].strip()
         results = []
         seen = set()
-
         for target in cleaned:
             if target in seen:
                 continue
             seen.add(target)
-
-            # create a real whisper for this suggestion
             secret_id = str(uuid.uuid4())
-            # If message_without_at empty, store empty message (user can edit after sending)
             await collection.insert_one(
                 {"_id": secret_id, "text": message_without_at, "target": target}
             )
-
-            keyboard = InlineKeyboardMarkup(
+            kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="Open Message", callback_data=f"open:{secret_id}")]
                 ]
             )
-
             results.append(
                 InlineQueryResultArticle(
                     id=str(uuid.uuid4()),
@@ -202,17 +182,13 @@ async def inline_handler(query: InlineQuery):
                     input_message_content=InputTextMessageContent(
                         message_text="<b>A secret message</b>"
                     ),
-                    reply_markup=keyboard,
+                    reply_markup=kb,
                 )
             )
-
-            # limit suggestions to 10 (should already be <=10)
             if len(results) >= 10:
                 break
-
         return await query.answer(results, cache_time=0)
 
-    # NORMAL FLOW: parse potential target at end
     parts = text.split()
     last = parts[-1]
     is_username = last.startswith("@") and len(last) > 1
@@ -223,28 +199,22 @@ async def inline_handler(query: InlineQuery):
         secret_message = " ".join(parts[:-1])
         normalized = await normalize_and_validate_target(target_raw)
         if not normalized:
-            # invalid target provided by user
             err = InlineQueryResultArticle(
                 id="invalid_target",
-                title="Invalid target",
-                description="The username or ID you provided seems invalid",
+                title="Invalid username or ID",
+                description="The username/ID you provided looks invalid",
                 input_message_content=InputTextMessageContent(
-                    message_text="❌ The username or ID you provided looks invalid."
+                    message_text="❌ The username or ID you provided seems invalid. Make sure it exists on Telegram."
                 ),
             )
             return await query.answer([err], cache_time=0)
-
         target = normalized
-
     else:
-        # only allow self-target when in Saved Messages (chat_type == "sender")
+        # Only allow self-target when using Saved Messages (chat_type == "sender")
         if query.chat_type == "sender":
-            target = str(user_id)
             secret_message = text
-            # normalize self as display
-            normalized_self = await normalize_and_validate_target(target)
-            if normalized_self:
-                target = normalized_self
+            normalized_self = await normalize_and_validate_target(str(user_id))
+            target = normalized_self if normalized_self else str(user_id)
         else:
             err = InlineQueryResultArticle(
                 id="need_username",
@@ -256,12 +226,12 @@ async def inline_handler(query: InlineQuery):
             )
             return await query.answer([err], cache_time=0)
 
-    # Save whisper and history (history uses normalized target)
+    # Save whisper + update history (normalize target used)
     secret_id = str(uuid.uuid4())
     await collection.insert_one({"_id": secret_id, "text": secret_message, "target": target})
     await save_history_entry(user_id, target)
 
-    keyboard = InlineKeyboardMarkup(
+    kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Open Message", callback_data=f"open:{secret_id}")]
         ]
@@ -272,7 +242,7 @@ async def inline_handler(query: InlineQuery):
         title="Send Whisper",
         description=f"Secret message for {target}",
         input_message_content=InputTextMessageContent(message_text="<b>A secret message</b>"),
-        reply_markup=keyboard,
+        reply_markup=kb,
     )
 
     await query.answer([result], cache_time=0)
@@ -281,7 +251,6 @@ async def inline_handler(query: InlineQuery):
 @dp.callback_query(F.data.startswith("open"))
 async def open_whisper(callback: CallbackQuery):
     _, secret_id = callback.data.split(":")
-
     record = await collection.find_one({"_id": secret_id})
     if not record:
         return await callback.answer("Whisper expired or deleted.", show_alert=True)
@@ -291,17 +260,14 @@ async def open_whisper(callback: CallbackQuery):
     user = callback.from_user
 
     allowed = False
-    # allowed if target is @username and matches user's username
     if target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
-    # allowed if target is "Name (id)"
     m = re.match(r".+\((\d+)\)$", target)
     if m:
         tid = m.group(1)
         if str(user.id) == tid:
             allowed = True
-    # allowed if target is raw numeric string
     if target == str(user.id):
         allowed = True
 
@@ -316,7 +282,7 @@ async def open_whisper(callback: CallbackQuery):
 
 
 async def main():
-    print("Whisper bot running with deduped & validated history…")
+    print("Whisper bot running with validation & deduped history…")
     await dp.start_polling(bot)
 
 
