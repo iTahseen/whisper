@@ -33,58 +33,88 @@ history_db = db["history"]
 
 async def normalize_and_validate_target(raw: str):
     """
-    Validate and normalize a raw target string.
-    Returns normalized target or None if invalid.
-    Normalized forms:
-      - "@username"
-      - "FirstName (12345678)"
+    Try to validate/normalize raw target.
+    Returns:
+      - "@username"  (if username exists)
+      - "12345678"   (raw numeric id) — accepted even if bot can't fetch user
+      - None         (invalid username)
+    Notes:
+      - For numeric IDs we try get_chat; if it succeeds we convert to @username or keep as "User (ID)".
+      - If get_chat fails for a numeric ID, we still accept the numeric ID (because validation may be impossible).
     """
     raw = raw.strip()
     if not raw:
         return None
 
-    # If already in "Name (ID)" form, try to validate ID
-    m = re.match(r"^(.+)\s+\((\d+)\)$", raw)
-    if m:
-        idstr = m.group(2)
-        try:
-            chat = await bot.get_chat(int(idstr))
-            if chat.username:
-                return f"@{chat.username}"
-            else:
-                name = chat.first_name or "User"
-                return f"{name} ({idstr})"
-        except Exception:
-            return None
-
-    # @username case
+    # If the user gave a username-like value " @name "
     if raw.startswith("@"):
         username = raw[1:].strip()
         if not username:
             return None
         try:
             chat = await bot.get_chat(username)
-            if chat.username:
+            if getattr(chat, "username", None):
                 return f"@{chat.username}"
             else:
-                name = chat.first_name or "User"
-                return f"{name} ({chat.id})"
+                # If chat exists but has no username, return ID string (we'll display name later)
+                return str(chat.id)
         except Exception:
+            # username truly invalid or inaccessible
             return None
 
-    # numeric ID case
+    # If numeric ID
     if raw.isdigit():
         try:
             chat = await bot.get_chat(int(raw))
-            if chat.username:
+            if getattr(chat, "username", None):
+                return f"@{chat.username}"
+            else:
+                # convert to raw id string (we can also display name later if needed)
+                return str(chat.id)
+        except Exception:
+            # Can't verify with Telegram — accept raw numeric id anyway.
+            return raw
+
+    # If user passed "Name (ID)" pattern, extract ID and accept it (try to verify)
+    m = re.match(r".+\((\d+)\)$", raw)
+    if m:
+        idstr = m.group(1)
+        try:
+            chat = await bot.get_chat(int(idstr))
+            if getattr(chat, "username", None):
+                return f"@{chat.username}"
+            else:
+                return str(chat.id)
+        except Exception:
+            # Accept raw ID inside the parentheses
+            return idstr
+
+    return None
+
+
+async def display_target_label(target: str):
+    """
+    Return a friendly label for display in suggestions/errors:
+      - If target starts with '@' -> '@username'
+      - If target is numeric string -> try to get real name, else 'User (ID)'
+    """
+    if not target:
+        return target
+    if target.startswith("@"):
+        return target
+    if target.isdigit():
+        try:
+            chat = await bot.get_chat(int(target))
+            if getattr(chat, "username", None):
                 return f"@{chat.username}"
             else:
                 name = chat.first_name or "User"
-                return f"{name} ({raw})"
+                return f"{name} ({target})"
         except Exception:
-            return None
-
-    return None
+            # can't fetch name, return fallback
+            return f"User ({target})"
+    # fallback, already normalized
+    return target
 
 
 async def save_history_entry(owner_id: int, target_normalized: str):
@@ -144,7 +174,7 @@ async def inline_handler(query: InlineQuery):
         )
         return await query.answer([help_result], cache_time=0)
 
-    # History suggestions when trailing '@'
+    # HISTORY SUGGESTIONS (trailing @)
     if text.endswith("@"):
         cleaned = await prune_and_get_history(user_id)
         if not cleaned:
@@ -161,34 +191,44 @@ async def inline_handler(query: InlineQuery):
         message_without_at = text[:-1].strip()
         results = []
         seen = set()
+
         for target in cleaned:
             if target in seen:
                 continue
             seen.add(target)
+
+            # create a real whisper for this suggestion
             secret_id = str(uuid.uuid4())
             await collection.insert_one(
                 {"_id": secret_id, "text": message_without_at, "target": target}
             )
+
             kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [InlineKeyboardButton(text="Open Message", callback_data=f"open:{secret_id}")]
                 ]
             )
+
+            label = await display_target_label(target)
+
             results.append(
                 InlineQueryResultArticle(
                     id=str(uuid.uuid4()),
-                    title=f"Send to {target}",
-                    description=f"Whisper for {target}",
+                    title=f"Send to {label}",
+                    description=label,
                     input_message_content=InputTextMessageContent(
                         message_text="<b>A secret message</b>"
                     ),
                     reply_markup=kb,
                 )
             )
+
             if len(results) >= 10:
                 break
+
         return await query.answer(results, cache_time=0)
 
+    # NORMAL FLOW: parse potential target at end
     parts = text.split()
     last = parts[-1]
     is_username = last.startswith("@") and len(last) > 1
@@ -197,8 +237,11 @@ async def inline_handler(query: InlineQuery):
     if is_username or is_userid:
         target_raw = last
         secret_message = " ".join(parts[:-1])
+
         normalized = await normalize_and_validate_target(target_raw)
-        if not normalized:
+
+        if normalized is None:
+            # username is provably invalid
             err = InlineQueryResultArticle(
                 id="invalid_target",
                 title="Invalid username or ID",
@@ -208,11 +251,15 @@ async def inline_handler(query: InlineQuery):
                 ),
             )
             return await query.answer([err], cache_time=0)
+
+        # normalized contains @username or raw numeric id string
         target = normalized
+
     else:
         # Only allow self-target when using Saved Messages (chat_type == "sender")
         if query.chat_type == "sender":
             secret_message = text
+            # normalize self id if possible, else leave as raw id string
             normalized_self = await normalize_and_validate_target(str(user_id))
             target = normalized_self if normalized_self else str(user_id)
         else:
@@ -226,7 +273,7 @@ async def inline_handler(query: InlineQuery):
             )
             return await query.answer([err], cache_time=0)
 
-    # Save whisper + update history (normalize target used)
+    # Save whisper + update history
     secret_id = str(uuid.uuid4())
     await collection.insert_one({"_id": secret_id, "text": secret_message, "target": target})
     await save_history_entry(user_id, target)
@@ -237,10 +284,12 @@ async def inline_handler(query: InlineQuery):
         ]
     )
 
+    label = await display_target_label(target)
+
     result = InlineQueryResultArticle(
         id=secret_id,
-        title="Send Whisper",
-        description=f"Secret message for {target}",
+        title=f"Send Whisper to {label}",
+        description=label,
         input_message_content=InputTextMessageContent(message_text="<b>A secret message</b>"),
         reply_markup=kb,
     )
@@ -263,17 +312,20 @@ async def open_whisper(callback: CallbackQuery):
     if target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
-    m = re.match(r".+\((\d+)\)$", target)
+
+    m = re.match(r".+\((\d+)\)$", await display_target_label(target))
     if m:
         tid = m.group(1)
         if str(user.id) == tid:
             allowed = True
+
     if target == str(user.id):
         allowed = True
 
     if not allowed:
+        label = await display_target_label(target)
         return await callback.answer(
-            f"🚫 This whisper is meant for <b>{target}</b>, not for you 👀",
+            f"🚫 This whisper is meant for <b>{label}</b>, not for you 👀",
             show_alert=True
         )
 
@@ -282,7 +334,7 @@ async def open_whisper(callback: CallbackQuery):
 
 
 async def main():
-    print("Whisper bot running with validation & deduped history…")
+    print("Whisper bot running with tolerant ID handling…")
     await dp.start_polling(bot)
 
 
