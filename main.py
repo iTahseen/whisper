@@ -13,7 +13,7 @@ from aiogram.types import (
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 
-BOT_TOKEN = "6817290645:AAGG27rLGAIR6IWwO9zb2_lwpY2qzCXZ2cI"
+BOT_TOKEN = "8481724656:AAEfaqCOomN0qGQQVY3OtSpUU_VavGsK6zo"
 
 bot = Bot(
     token=BOT_TOKEN,
