@@ -90,7 +90,10 @@ async def inline_handler(query: InlineQuery):
         message_without_at = text[:-1].strip()
         results = []
 
-        for target in record["targets"]:
+        # FIX: remove duplicates while preserving order
+        unique_targets = list(dict.fromkeys(record["targets"]))
+
+        for target in unique_targets:
             secret_id = str(uuid.uuid4())
 
             await collection.insert_one(
