@@ -211,7 +211,7 @@ async def open_whisper(callback: CallbackQuery):
 
     if not allowed:
         return await callback.answer(
-            f"This whisper is meant for {target}, not for you.",
+            f"This is meant for {target}, not for you.",
             show_alert=True
         )
 
