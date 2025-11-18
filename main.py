@@ -9,6 +9,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
+    BotCommand,
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -90,7 +91,6 @@ async def inline_handler(query: InlineQuery):
         message_without_at = text[:-1].strip()
         results = []
 
-        # FIX: remove duplicates while preserving order
         unique_targets = list(dict.fromkeys(record["targets"]))
 
         for target in unique_targets:
@@ -220,7 +220,13 @@ async def open_whisper(callback: CallbackQuery):
 
 
 async def main():
-    print("Whisper bot running with full history support…")
+    print("Whisper bot running…")
+
+
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Start the bot"),
+    ])
+
     await dp.start_polling(bot)
 
 
