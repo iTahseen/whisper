@@ -29,49 +29,21 @@ db = mongo_client["whisperbot"]
 collection = db["whispers"]
 history_db = db["history"]
 
+
+# Convert numeric IDs into @username or Name (ID)
 async def convert_target(target: str):
-    target = target.strip()
-    if not target:
-        return None
-
-    if target.endswith(")") and "(" in target:
-        try:
-            idpart = target.split("(")[-1].rstrip(")")
-            chat = await bot.get_chat(int(idpart))
-            if getattr(chat, "username", None):
-                return f"@{chat.username}"
-            else:
-                name = chat.first_name or "User"
-                return f"{name} ({idpart})"
-        except Exception:
-            return idpart if idpart.isdigit() else None
-
-    if target.startswith("@"):
-        username = target[1:].strip()
-        if not username:
-            return None
-        try:
-            chat = await bot.get_chat(username)
-            if getattr(chat, "username", None):
-                return f"@{chat.username}"
-            else:
-                name = chat.first_name or "User"
-                return f"{name} ({chat.id})"
-        except Exception:
-            return None
-
     if target.isdigit():
         try:
             chat = await bot.get_chat(int(target))
-            if getattr(chat, "username", None):
+            if chat.username:
                 return f"@{chat.username}"
             else:
                 name = chat.first_name or "User"
                 return f"{name} ({target})"
-        except Exception:
+        except:
             return target
+    return target
 
-    return None
 
 @dp.message(F.text == "/start")
 async def start_cmd(message):
@@ -82,11 +54,13 @@ async def start_cmd(message):
         "<b>Only the target person can read it.</b>"
     )
 
+
 @dp.inline_query()
 async def inline_handler(query: InlineQuery):
     text = query.query.strip()
     user_id = query.from_user.id
 
+    # 1) Show help message when empty
     if text == "":
         help_result = InlineQueryResultArticle(
             id="help",
@@ -101,10 +75,11 @@ async def inline_handler(query: InlineQuery):
         )
         return await query.answer([help_result], cache_time=0)
 
+    # 2) History suggestions when typing '@'
     if text.endswith("@"):
         record = await history_db.find_one({"owner": user_id})
 
-        if not record or len(record.get("targets", [])) == 0:
+        if not record or len(record["targets"]) == 0:
             empty = InlineQueryResultArticle(
                 id="no_history",
                 title="No previous recipients",
@@ -115,21 +90,17 @@ async def inline_handler(query: InlineQuery):
             )
             return await query.answer([empty], cache_time=0)
 
+        # Actual message without '@'
         message_without_at = text[:-1].strip()
+
         results = []
-        seen = set()
 
-        for raw_target in record.get("targets", []):
-            normalized = await convert_target(raw_target)
-            if not normalized:
-                continue
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-
+        for target in record["targets"]:
+            # Create REAL whisper for suggestion
             secret_id = str(uuid.uuid4())
+
             await collection.insert_one(
-                {"_id": secret_id, "text": message_without_at, "target": normalized}
+                {"_id": secret_id, "text": message_without_at, "target": target}
             )
 
             keyboard = InlineKeyboardMarkup(
@@ -141,8 +112,8 @@ async def inline_handler(query: InlineQuery):
             results.append(
                 InlineQueryResultArticle(
                     id=str(uuid.uuid4()),
-                    title=f"Send to {normalized}",
-                    description=f"Whisper for {normalized}",
+                    title=f"Send to {target}",
+                    description=f"Whisper for {target}",
                     input_message_content=InputTextMessageContent(
                         message_text="<b>A secret message</b>"
                     ),
@@ -150,22 +121,9 @@ async def inline_handler(query: InlineQuery):
                 )
             )
 
-            if len(results) >= 10:
-                break
-
-        if not results:
-            empty = InlineQueryResultArticle(
-                id="no_valid",
-                title="No valid recipients",
-                description="Your saved recipients could not be validated",
-                input_message_content=InputTextMessageContent(
-                    message_text="No valid saved recipients available."
-                ),
-            )
-            return await query.answer([empty], cache_time=0)
-
         return await query.answer(results, cache_time=0)
 
+    # 3) Normal whisper creation
     parts = text.split()
     last = parts[-1]
 
@@ -176,6 +134,7 @@ async def inline_handler(query: InlineQuery):
         target_raw = last
         secret_message = " ".join(parts[:-1])
     else:
+        # Allow whisper to self ONLY in Saved Messages
         if query.chat_type == "sender":
             target_raw = str(user_id)
             secret_message = text
@@ -190,25 +149,18 @@ async def inline_handler(query: InlineQuery):
             )
             return await query.answer([err], cache_time=0)
 
+    # Convert numeric ID to username
     target = await convert_target(target_raw)
-    if not target:
-        err = InlineQueryResultArticle(
-            id="invalid_target",
-            title="Invalid username or ID",
-            description="The username/ID you provided looks invalid",
-            input_message_content=InputTextMessageContent(
-                message_text="❌ The username or ID you provided seems invalid."
-            ),
-        )
-        return await query.answer([err], cache_time=0)
 
+    # 4) Save history (limit 10 entries)
     record = await history_db.find_one({"owner": user_id})
 
     if record:
-        hist = record.get("targets", [])
-        hist = [t for t in hist if t != target]
+        hist = record["targets"]
+        if target in hist:
+            hist.remove(target)
         hist.insert(0, target)
-        hist = hist[:10]
+        hist = hist[:10]  # limit to 10 recent
         await history_db.update_one(
             {"owner": user_id},
             {"$set": {"targets": hist}}
@@ -216,6 +168,7 @@ async def inline_handler(query: InlineQuery):
     else:
         await history_db.insert_one({"owner": user_id, "targets": [target]})
 
+    # 5) Create whisper
     secret_id = str(uuid.uuid4())
     await collection.insert_one(
         {"_id": secret_id, "text": secret_message, "target": target}
@@ -239,6 +192,7 @@ async def inline_handler(query: InlineQuery):
 
     await query.answer([result], cache_time=0)
 
+
 @dp.callback_query(F.data.startswith("open"))
 async def open_whisper(callback: CallbackQuery):
     _, secret_id = callback.data.split(":")
@@ -253,28 +207,36 @@ async def open_whisper(callback: CallbackQuery):
 
     allowed = False
 
+    # Allow for @username
     if target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
 
+    # Allow for Name (ID)
     if target.endswith(f"({user.id})"):
         allowed = True
 
+    # Allow for raw numeric target
     if target == str(user.id):
         allowed = True
 
+    # ❌ Not allowed → show stylish message
     if not allowed:
         return await callback.answer(
-            f"This whisper is meant for {target}, not for you.",
+            f"🚫 This whisper is meant for <b>{target}</b>, not for you 👀",
             show_alert=True
         )
 
+    # Allowed → show whisper
     popup = text[:200] + "..." if len(text) > 200 else text
     await callback.answer(popup, show_alert=True)
+
+
 
 async def main():
     print("Whisper bot running with full history support…")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
