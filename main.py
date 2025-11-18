@@ -30,7 +30,6 @@ collection = db["whispers"]
 history_db = db["history"]
 
 
-# Convert numeric IDs into @username or Name (ID)
 async def convert_target(target: str):
     if target.isdigit():
         try:
@@ -60,7 +59,6 @@ async def inline_handler(query: InlineQuery):
     text = query.query.strip()
     user_id = query.from_user.id
 
-    # 1) Show help message when empty
     if text == "":
         help_result = InlineQueryResultArticle(
             id="help",
@@ -75,7 +73,6 @@ async def inline_handler(query: InlineQuery):
         )
         return await query.answer([help_result], cache_time=0)
 
-    # 2) History suggestions when typing '@'
     if text.endswith("@"):
         record = await history_db.find_one({"owner": user_id})
 
@@ -90,13 +87,10 @@ async def inline_handler(query: InlineQuery):
             )
             return await query.answer([empty], cache_time=0)
 
-        # Actual message without '@'
         message_without_at = text[:-1].strip()
-
         results = []
 
         for target in record["targets"]:
-            # Create REAL whisper for suggestion
             secret_id = str(uuid.uuid4())
 
             await collection.insert_one(
@@ -123,7 +117,6 @@ async def inline_handler(query: InlineQuery):
 
         return await query.answer(results, cache_time=0)
 
-    # 3) Normal whisper creation
     parts = text.split()
     last = parts[-1]
 
@@ -134,7 +127,6 @@ async def inline_handler(query: InlineQuery):
         target_raw = last
         secret_message = " ".join(parts[:-1])
     else:
-        # Allow whisper to self ONLY in Saved Messages
         if query.chat_type == "sender":
             target_raw = str(user_id)
             secret_message = text
@@ -149,10 +141,8 @@ async def inline_handler(query: InlineQuery):
             )
             return await query.answer([err], cache_time=0)
 
-    # Convert numeric ID to username
     target = await convert_target(target_raw)
 
-    # 4) Save history (limit 10 entries)
     record = await history_db.find_one({"owner": user_id})
 
     if record:
@@ -160,7 +150,7 @@ async def inline_handler(query: InlineQuery):
         if target in hist:
             hist.remove(target)
         hist.insert(0, target)
-        hist = hist[:10]  # limit to 10 recent
+        hist = hist[:10]
         await history_db.update_one(
             {"owner": user_id},
             {"$set": {"targets": hist}}
@@ -168,7 +158,6 @@ async def inline_handler(query: InlineQuery):
     else:
         await history_db.insert_one({"owner": user_id, "targets": [target]})
 
-    # 5) Create whisper
     secret_id = str(uuid.uuid4())
     await collection.insert_one(
         {"_id": secret_id, "text": secret_message, "target": target}
@@ -207,30 +196,24 @@ async def open_whisper(callback: CallbackQuery):
 
     allowed = False
 
-    # Allow for @username
     if target.startswith("@") and user.username:
         if target.lower() == f"@{user.username}".lower():
             allowed = True
 
-    # Allow for Name (ID)
     if target.endswith(f"({user.id})"):
         allowed = True
 
-    # Allow for raw numeric target
     if target == str(user.id):
         allowed = True
 
-    # ❌ Not allowed → show stylish message
     if not allowed:
         return await callback.answer(
-            f"🚫 This whisper is meant for <b>{target}</b>, not for you 👀",
+            f"This whisper is meant for {target}, not for you.",
             show_alert=True
         )
 
-    # Allowed → show whisper
     popup = text[:200] + "..." if len(text) > 200 else text
     await callback.answer(popup, show_alert=True)
-
 
 
 async def main():
